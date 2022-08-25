@@ -5,17 +5,37 @@ using System.Linq;
 
 namespace folder_size
 {
-    class Program
+    internal class Program
     {
-        static void Main(string[] args)
+        private static void Main(string[] args)
         {
             try
             {
-                var path = getPath(args);
-                var dumpToFile = getDumpToFile(args);
-                var finder = new SizeFinder(path);
-                finder.Find();
-                finder.DisplayOrdered();
+                string path = getPath(args);
+                List<string> addSeparate = getSeparate(args);
+                bool dumpToFile = getFlag(args, "--dump");
+                bool fullName = getFlag(args, "--fullname") || getFlag(args, "-fullname");
+                bool skipCheck = getFlag(args, "-y") || getFlag(args, "--skip-check");
+
+                Console.WriteLine($"Find folder sizers with args: ");
+                Console.WriteLine($"  dumpToFile: {dumpToFile}");
+                Console.WriteLine($"  fullName: {fullName}");
+                if (addSeparate.Count == 0)
+                    Console.WriteLine($"  addSeparate: <empty>");
+                else
+                {
+                    foreach (string s in addSeparate)
+                    {
+                        Console.WriteLine($"  addSeparate: {s}");
+                    }
+                }
+                Console.WriteLine($"");
+                Console.WriteLine($"Use '-y' to skip this check");
+                Console.Read();
+                Console.WriteLine($"Running...");
+                SizeFinder finder = new SizeFinder(path);
+                finder.Find(addSeparate);
+                finder.DisplayOrdered(fullName);
                 Console.Read();
             }
             catch (Exception e)
@@ -30,7 +50,7 @@ namespace folder_size
             {
                 throw new Exception("No path given");
             }
-            var path = args[0];
+            string path = args[0];
 
             if (Uri.IsWellFormedUriString(path, UriKind.RelativeOrAbsolute))
             {
@@ -46,13 +66,29 @@ namespace folder_size
             }
         }
 
-        private static bool getDumpToFile(string[] args)
+
+        private static List<string> getSeparate(string[] args)
         {
-            return args.Contains("--dump");
+            List<string> separates = new List<string>();
+            const string flag = "-separate=";
+            foreach (string arg in args)
+            {
+                if (arg.ToLower().StartsWith(flag))
+                {
+                    string filter = arg.Substring(flag.Length);
+                    separates.Add(filter);
+                }
+            }
+            return separates;
+        }
+
+        private static bool getFlag(string[] args, string flag)
+        {
+            return args.Contains(flag);
         }
     }
 
-    class SizeInfo
+    internal class SizeInfo
     {
         public FileSystemInfo info;
         public long size;
@@ -63,38 +99,37 @@ namespace folder_size
             this.size = size;
         }
     }
-    class SizeFinder
+
+    internal class SizeFinder
     {
-        string targetPath;
-        Uri targetUri;
+        private string targetPath;
         public List<SizeInfo> sizes;
 
         public SizeFinder(string targetPath)
         {
             this.targetPath = targetPath;
-            this.targetUri = new Uri(Path.GetFullPath(targetPath));
         }
-        public void Find()
+        public void Find(List<string> showSeparate)
         {
-            this.sizes = new List<SizeInfo>();
+            sizes = new List<SizeInfo>();
 
-            var targetDir = new DirectoryInfo(this.targetPath);
-            var dirs = targetDir.GetDirectories();
-            var files = targetDir.GetFiles();
-            foreach (var dir in dirs)
+            DirectoryInfo targetDir = new DirectoryInfo(targetPath);
+            DirectoryInfo[] dirs = targetDir.GetDirectories();
+            FileInfo[] files = targetDir.GetFiles();
+            foreach (DirectoryInfo dir in dirs)
             {
                 long size = -1;
                 try
                 {
-                    size = getDirSize(dir);
+                    size = getDirSize(dir, showSeparate);
                 }
                 catch (Exception e)
                 {
-                    Console.WriteLine($"Exeption {e.GetType()} - {e.Message}");
+                    Console.WriteLine($"Exeption {e.GetType()} - {e.Message}\n{e.StackTrace}\n\n");
                 }
-                this.sizes.Add(new SizeInfo(dir, size));
+                sizes.Add(new SizeInfo(dir, size));
             }
-            foreach (var file in files)
+            foreach (FileInfo file in files)
             {
                 long size = -1;
                 try
@@ -103,74 +138,95 @@ namespace folder_size
                 }
                 catch (Exception e)
                 {
-                    Console.WriteLine($"Exeption {e.GetType()} - {e.Message}");
+                    Console.WriteLine($"Exeption {e.GetType()} - {e.Message}\n{e.StackTrace}\n\n");
                 }
-                this.sizes.Add(new SizeInfo(file, size));
+                sizes.Add(new SizeInfo(file, size));
             }
         }
 
-        public void Display()
+        public void Display(bool fullName)
         {
-            foreach (var item in this.sizes)
+            foreach (SizeInfo item in sizes)
             {
-                this.writeSize(item);
+                writeSize(item, fullName);
             }
         }
-        public void DisplayOrdered()
+        public void DisplayOrdered(bool fullName)
         {
-            var ordered = this.sizes.OrderByDescending(i => i.size);
-            var maxNameLength = this.sizes.Max(i => i.info.Name.Length);
-            foreach (var item in ordered)
+            IOrderedEnumerable<SizeInfo> ordered = sizes.OrderByDescending(i => i.size);
+            int maxNameLength = sizes.Max(i => fullName ? i.info.FullName.Length : i.info.Name.Length);
+            foreach (SizeInfo item in ordered)
             {
-                this.writeSize(item, Math.Max(maxNameLength + 20, 50));
+                writeSize(item, fullName, Math.Max(maxNameLength + 20, 50));
             }
         }
 
-        private void writeSize(FileSystemInfo file, long length, int padding = 50)
+        private void writeSize(SizeInfo info, bool fullName, int padding = 50)
         {
-            var name = file.Name + (file.Attributes == FileAttributes.Directory ? "/" : "");
-            var size = SizeSuffix(length, paddingSize: 10);
+            writeSize(info.info, info.size, fullName, padding);
+        }
+        private void writeSize(FileSystemInfo file, long length, bool fullName, int padding = 50)
+        {
+            string fileName = fullName ? file.FullName : file.Name;
+            string name = fileName + (file.Attributes == FileAttributes.Directory ? "/" : "");
+            string size = SizeSuffix(length, paddingSize: 10);
             Console.WriteLine("{0} | {1}", name.PadRight(padding), size.PadRight(20));
         }
-        private void writeSize(SizeInfo info, int padding = 50)
+
+        private long getDirSize(DirectoryInfo info, List<string> showSeparate)
         {
-            this.writeSize(info.info, info.size, padding);
+            try
+            {
+                long size = 0;
+
+                DirectoryInfo[] dirs = info.GetDirectories();
+                FileInfo[] files = info.GetFiles();
+                foreach (DirectoryInfo dir in dirs)
+                {
+                    size += getDirSize(dir, showSeparate);
+                }
+                foreach (FileInfo file in files)
+                {
+                    size += file.Length;
+                }
+
+
+                if (showSeparate.Contains(info.Name))
+                {
+                    sizes.Add(new SizeInfo(info, size));
+                }
+
+                return size;
+            }
+            catch (DirectoryNotFoundException e)
+            {
+                Console.WriteLine($"Could not Find {e.Message}");
+                return 0;
+            }
+            catch (AccessViolationException e)
+            {
+                Console.WriteLine($"Could not Access {e.Message}");
+                return 0;
+            }
         }
 
-        private static long getDirSize(DirectoryInfo info)
-        {
-            long size = 0;
-            var dirs = info.GetDirectories();
-            var files = info.GetFiles();
-            foreach (var dir in dirs)
-            {
-                size += getDirSize(dir);
-            }
-            foreach (var file in files)
-            {
-                size += file.Length;
-            }
-            return size;
-        }
-
-
-        static readonly string[] SizeSuffixes =
+        private static readonly string[] SizeSuffixes =
                   { "bytes", "KB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB" };
 
-        static string SizeSuffix(long value, int decimalPlaces = 1, int paddingSize = 0)
+        private static string SizeSuffix(long value, int decimalPlaces = 1, int paddingSize = 0)
         {
             if (value < 0) { return "-" + SizeSuffix(-value); }
 
-            var i = 0;
-            var dValue = (decimal)value;
+            int i = 0;
+            decimal dValue = value;
             while (Math.Round(dValue, decimalPlaces) >= 1000)
             {
                 dValue /= 1024;
                 i++;
             }
 
-            var size = string.Format("{0:n" + decimalPlaces + "}", dValue);
-            var suffix = SizeSuffixes[i];
+            string size = string.Format("{0:n" + decimalPlaces + "}", dValue);
+            string suffix = SizeSuffixes[i];
             return size.PadRight(paddingSize) + " " + suffix;
         }
     }
