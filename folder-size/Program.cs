@@ -14,12 +14,14 @@ namespace folder_size
                 string path = getPath(args);
                 List<string> addSeparate = getSeparate(args);
                 bool dumpToFile = getFlag(args, "--dump");
-                bool fullName = getFlag(args, "--fullname") || getFlag(args, "-fullname");
+                bool fullName = getFlag(args, "--fullname") || getFlag(args, "-full");
                 bool skipCheck = getFlag(args, "-y") || getFlag(args, "--skip-check");
+                bool showLarge = getFlag(args, "--show-large");
 
                 Console.WriteLine($"Find folder sizers with args: ");
                 Console.WriteLine($"  dumpToFile: {dumpToFile}");
                 Console.WriteLine($"  fullName: {fullName}");
+                Console.WriteLine($"  showLarge: {showLarge}");
                 if (addSeparate.Count == 0)
                     Console.WriteLine($"  addSeparate: <empty>");
                 else
@@ -34,7 +36,10 @@ namespace folder_size
                 Console.Read();
                 Console.WriteLine($"Running...");
                 SizeFinder finder = new SizeFinder(path);
-                finder.Find(addSeparate);
+                finder.Find(addSeparate, showLarge);
+                Console.WriteLine("----------");
+                Console.WriteLine("RESULTS:");
+                Console.WriteLine("----------");
                 finder.DisplayOrdered(fullName);
                 Console.Read();
             }
@@ -48,7 +53,8 @@ namespace folder_size
         {
             if (args.Length == 0)
             {
-                throw new Exception("No path given");
+                Console.WriteLine($"No path given, using current folder");
+                return ".";
             }
             string path = args[0];
 
@@ -102,46 +108,15 @@ namespace folder_size
 
     internal class SizeFinder
     {
+        private const long LARGE_SIZE = 500_000_000;// 500mb
+
         private string targetPath;
         public List<SizeInfo> sizes;
+        public long total;
 
         public SizeFinder(string targetPath)
         {
             this.targetPath = targetPath;
-        }
-        public void Find(List<string> showSeparate)
-        {
-            sizes = new List<SizeInfo>();
-
-            DirectoryInfo targetDir = new DirectoryInfo(targetPath);
-            DirectoryInfo[] dirs = targetDir.GetDirectories();
-            FileInfo[] files = targetDir.GetFiles();
-            foreach (DirectoryInfo dir in dirs)
-            {
-                long size = -1;
-                try
-                {
-                    size = getDirSize(dir, showSeparate);
-                }
-                catch (Exception e)
-                {
-                    Console.WriteLine($"Exeption {e.GetType()} - {e.Message}\n{e.StackTrace}\n\n");
-                }
-                sizes.Add(new SizeInfo(dir, size));
-            }
-            foreach (FileInfo file in files)
-            {
-                long size = -1;
-                try
-                {
-                    size = file.Length;
-                }
-                catch (Exception e)
-                {
-                    Console.WriteLine($"Exeption {e.GetType()} - {e.Message}\n{e.StackTrace}\n\n");
-                }
-                sizes.Add(new SizeInfo(file, size));
-            }
         }
 
         public void Display(bool fullName)
@@ -153,11 +128,17 @@ namespace folder_size
         }
         public void DisplayOrdered(bool fullName)
         {
-            IOrderedEnumerable<SizeInfo> ordered = sizes.OrderByDescending(i => i.size);
             int maxNameLength = sizes.Max(i => fullName ? i.info.FullName.Length : i.info.Name.Length);
+            int padding = Math.Max(maxNameLength + 20, 50);
+
+            // write total, followed by empty line
+            writeSize("total", total, padding);
+            Console.WriteLine();
+
+            IOrderedEnumerable<SizeInfo> ordered = sizes.OrderByDescending(i => i.size);
             foreach (SizeInfo item in ordered)
             {
-                writeSize(item, fullName, Math.Max(maxNameLength + 20, 50));
+                writeSize(item, fullName, padding);
             }
         }
 
@@ -169,34 +150,64 @@ namespace folder_size
         {
             string fileName = fullName ? file.FullName : file.Name;
             string name = fileName + (file.Attributes == FileAttributes.Directory ? "/" : "");
+            writeSize(name, length, padding);
+        }
+        private void writeSize(string name, long length, int padding = 50)
+        {
             string size = SizeSuffix(length, paddingSize: 10);
             Console.WriteLine("{0} | {1}", name.PadRight(padding), size.PadRight(20));
         }
 
-        private long getDirSize(DirectoryInfo info, List<string> showSeparate)
+        public void Find(List<string> showSeparate, bool showLarge)
+        {
+            sizes = new List<SizeInfo>();
+
+            DirectoryInfo targetDir = new DirectoryInfo(targetPath);
+
+            // showDepth=1 so we show folders inside the target
+            total = getDirSize(targetDir, 1, showSeparate, showLarge);
+        }
+
+
+        private long getDirSize(DirectoryInfo parent, int showDepth, List<string> showSeparate, bool showLarge)
         {
             try
             {
-                long size = 0;
+                long current = 0;
 
-                DirectoryInfo[] dirs = info.GetDirectories();
-                FileInfo[] files = info.GetFiles();
+                DirectoryInfo[] dirs = parent.GetDirectories();
                 foreach (DirectoryInfo dir in dirs)
                 {
-                    size += getDirSize(dir, showSeparate);
+                    long child = getDirSize(dir, showDepth - 1, showSeparate, showLarge);
+                    if (showDepth > 0) // use too show folders in sub dir 
+                    {
+                        sizes.Add(new SizeInfo(dir, child));
+                    }
+                    else if (showSeparate.Contains(dir.Name)) // use to show folder seperate (like .../library/)
+                    {
+                        sizes.Add(new SizeInfo(dir, current));
+                    }
+                    else if (child > LARGE_SIZE) // use to show folders that are large
+                    {
+                        sizes.Add(new SizeInfo(dir, current));
+                    }
+
+                    current += child;
                 }
+
+                FileInfo[] files = parent.GetFiles();
                 foreach (FileInfo file in files)
                 {
-                    size += file.Length;
+                    long child = file.Length;
+                    if (showDepth > 0)
+                    {
+                        sizes.Add(new SizeInfo(file, child));
+                    }
+
+                    current += child;
                 }
 
-
-                if (showSeparate.Contains(info.Name))
-                {
-                    sizes.Add(new SizeInfo(info, size));
-                }
-
-                return size;
+                return current;
             }
             catch (DirectoryNotFoundException e)
             {
@@ -207,6 +218,21 @@ namespace folder_size
             {
                 Console.WriteLine($"Could not Access {e.Message}");
                 return 0;
+            }
+            catch (UnauthorizedAccessException e)
+            {
+                Console.WriteLine($"Could not Unauthorized {e.Message}");
+                return 0;
+            }
+            catch (PathTooLongException e)
+            {
+                Console.WriteLine($"Path too long {e.Message}");
+                return 0;
+            }
+            catch (Exception e)
+            {
+                Console.WriteLine($"Unexpected Exeption {e.GetType()} - {e.Message}\n{e.StackTrace}\n\n");
+                return -1;
             }
         }
 
