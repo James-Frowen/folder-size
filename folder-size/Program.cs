@@ -32,8 +32,11 @@ namespace folder_size
                     }
                 }
                 Console.WriteLine($"");
-                Console.WriteLine($"Use '-y' to skip this check");
-                Console.Read();
+                if (!skipCheck)
+                {
+                    Console.WriteLine($"Use '-y' to skip this check");
+                    Console.Read();
+                }
                 Console.WriteLine($"Running...");
                 SizeFinder finder = new SizeFinder(path);
                 finder.Find(addSeparate, showLarge);
