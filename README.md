@@ -1,6 +1,11 @@
 # folder-size
 Calculates folder size for windows
 
+## Build
+```
+dotnet publish ./folder-size/folder-size.csproj -c Release --output ./bin
+```
+
 ## Usage
 
 1) Build application
