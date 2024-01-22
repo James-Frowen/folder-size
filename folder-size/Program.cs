@@ -11,12 +11,13 @@ namespace folder_size
         {
             try
             {
-                string path = getPath(args);
-                List<string> addSeparate = getSeparate(args);
-                bool dumpToFile = getFlag(args, "--dump");
-                bool fullName = getFlag(args, "--fullname") || getFlag(args, "-full");
-                bool skipCheck = getFlag(args, "-y") || getFlag(args, "--skip-check");
-                bool showLarge = getFlag(args, "--show-large");
+                var path = getPath(args);
+                var addSeparate = getSeparate(args);
+                var depth = getDepth(args);
+                var dumpToFile = getFlag(args, "--dump");
+                var fullName = getFlag(args, "--fullname") || getFlag(args, "-full");
+                var skipCheck = getFlag(args, "-y") || getFlag(args, "--skip-check");
+                var showLarge = getFlag(args, "--show-large");
 
                 Console.WriteLine($"Find folder sizers with args: ");
                 Console.WriteLine($"  dumpToFile: {dumpToFile}");
@@ -26,7 +27,7 @@ namespace folder_size
                     Console.WriteLine($"  addSeparate: <empty>");
                 else
                 {
-                    foreach (string s in addSeparate)
+                    foreach (var s in addSeparate)
                     {
                         Console.WriteLine($"  addSeparate: {s}");
                     }
@@ -38,8 +39,8 @@ namespace folder_size
                     Console.Read();
                 }
                 Console.WriteLine($"Running...");
-                SizeFinder finder = new SizeFinder(path);
-                finder.Find(addSeparate, showLarge);
+                var finder = new SizeFinder(path);
+                finder.Find(depth, addSeparate, showLarge);
                 Console.WriteLine("----------");
                 Console.WriteLine("RESULTS:");
                 Console.WriteLine("----------");
@@ -59,7 +60,7 @@ namespace folder_size
                 Console.WriteLine($"No path given, using current folder");
                 return ".";
             }
-            string path = args[0];
+            var path = args[0];
 
             if (Uri.IsWellFormedUriString(path, UriKind.RelativeOrAbsolute))
             {
@@ -75,20 +76,33 @@ namespace folder_size
             }
         }
 
-
         private static List<string> getSeparate(string[] args)
         {
-            List<string> separates = new List<string>();
+            var separates = new List<string>();
             const string flag = "-separate=";
-            foreach (string arg in args)
+            foreach (var arg in args)
             {
                 if (arg.ToLower().StartsWith(flag))
                 {
-                    string filter = arg.Substring(flag.Length);
+                    var filter = arg.Substring(flag.Length);
                     separates.Add(filter);
                 }
             }
             return separates;
+        }
+
+        private static int getDepth(string[] args)
+        {
+            const string flag = "-depth=";
+            foreach (var arg in args)
+            {
+                if (arg.ToLower().StartsWith(flag))
+                {
+                    var depth = arg.Substring(flag.Length);
+                    return int.Parse(depth);
+                }
+            }
+            return 1;
         }
 
         private static bool getFlag(string[] args, string flag)
@@ -124,22 +138,22 @@ namespace folder_size
 
         public void Display(bool fullName)
         {
-            foreach (SizeInfo item in sizes)
+            foreach (var item in sizes)
             {
                 writeSize(item, fullName);
             }
         }
         public void DisplayOrdered(bool fullName)
         {
-            int maxNameLength = sizes.Max(i => fullName ? i.info.FullName.Length : i.info.Name.Length);
-            int padding = Math.Max(maxNameLength + 20, 50);
+            var maxNameLength = sizes.Max(i => fullName ? i.info.FullName.Length : i.info.Name.Length);
+            var padding = Math.Max(maxNameLength + 20, 50);
 
             // write total, followed by empty line
             writeSize("total", total, padding);
             Console.WriteLine();
 
-            IOrderedEnumerable<SizeInfo> ordered = sizes.OrderByDescending(i => i.size);
-            foreach (SizeInfo item in ordered)
+            var ordered = sizes.OrderByDescending(i => i.size);
+            foreach (var item in ordered)
             {
                 writeSize(item, fullName, padding);
             }
@@ -151,24 +165,23 @@ namespace folder_size
         }
         private void writeSize(FileSystemInfo file, long length, bool fullName, int padding = 50)
         {
-            string fileName = fullName ? file.FullName : file.Name;
-            string name = fileName + (file.Attributes == FileAttributes.Directory ? "/" : "");
+            var fileName = fullName ? file.FullName : file.Name;
+            var name = fileName + (file.Attributes == FileAttributes.Directory ? "/" : "");
             writeSize(name, length, padding);
         }
         private void writeSize(string name, long length, int padding = 50)
         {
-            string size = SizeSuffix(length, paddingSize: 10);
+            var size = SizeSuffix(length, paddingSize: 10);
             Console.WriteLine("{0} | {1}", name.PadRight(padding), size.PadRight(20));
         }
 
-        public void Find(List<string> showSeparate, bool showLarge)
+        public void Find(int depth, List<string> showSeparate, bool showLarge)
         {
             sizes = new List<SizeInfo>();
 
-            DirectoryInfo targetDir = new DirectoryInfo(targetPath);
+            var targetDir = new DirectoryInfo(targetPath);
 
-            // showDepth=1 so we show folders inside the target
-            total = getDirSize(targetDir, 1, showSeparate, showLarge);
+            total = getDirSize(targetDir, depth, showSeparate, showLarge);
         }
 
 
@@ -178,30 +191,30 @@ namespace folder_size
             {
                 long current = 0;
 
-                DirectoryInfo[] dirs = parent.GetDirectories();
-                foreach (DirectoryInfo dir in dirs)
+                var dirs = parent.GetDirectories();
+                foreach (var dir in dirs)
                 {
-                    long child = getDirSize(dir, showDepth - 1, showSeparate, showLarge);
+                    var child = getDirSize(dir, showDepth - 1, showSeparate, showLarge);
                     if (showDepth > 0) // use too show folders in sub dir 
                     {
                         sizes.Add(new SizeInfo(dir, child));
                     }
                     else if (showSeparate.Contains(dir.Name)) // use to show folder seperate (like .../library/)
                     {
-                        sizes.Add(new SizeInfo(dir, current));
+                        sizes.Add(new SizeInfo(dir, child));
                     }
-                    else if (child > LARGE_SIZE) // use to show folders that are large
+                    else if (showLarge && child > LARGE_SIZE) // use to show folders that are large
                     {
-                        sizes.Add(new SizeInfo(dir, current));
+                        sizes.Add(new SizeInfo(dir, child));
                     }
 
                     current += child;
                 }
 
-                FileInfo[] files = parent.GetFiles();
-                foreach (FileInfo file in files)
+                var files = parent.GetFiles();
+                foreach (var file in files)
                 {
-                    long child = file.Length;
+                    var child = file.Length;
                     if (showDepth > 0)
                     {
                         sizes.Add(new SizeInfo(file, child));
@@ -246,7 +259,7 @@ namespace folder_size
         {
             if (value < 0) { return "-" + SizeSuffix(-value); }
 
-            int i = 0;
+            var i = 0;
             decimal dValue = value;
             while (Math.Round(dValue, decimalPlaces) >= 1000)
             {
@@ -254,8 +267,8 @@ namespace folder_size
                 i++;
             }
 
-            string size = string.Format("{0:n" + decimalPlaces + "}", dValue);
-            string suffix = SizeSuffixes[i];
+            var size = string.Format("{0:n" + decimalPlaces + "}", dValue);
+            var suffix = SizeSuffixes[i];
             return size.PadRight(paddingSize) + " " + suffix;
         }
     }
