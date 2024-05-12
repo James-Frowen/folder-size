@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text;
 
 namespace folder_size
 {
@@ -19,32 +20,49 @@ namespace folder_size
                 var skipCheck = getFlag(args, "-y") || getFlag(args, "--skip-check");
                 var showLarge = getFlag(args, "--show-large");
 
-                Console.WriteLine($"Find folder sizers with args: ");
-                Console.WriteLine($"  dumpToFile: {dumpToFile}");
-                Console.WriteLine($"  fullName: {fullName}");
-                Console.WriteLine($"  showLarge: {showLarge}");
-                if (addSeparate.Count == 0)
-                    Console.WriteLine($"  addSeparate: <empty>");
+                if (getFlag(args, "--find-dups"))
+                {
+                    Console.WriteLine($"Running with --find-dups");
+                    FindDups.Scan(path);
+                }
+                else if (getFlag(args, "--fix-drive"))
+                {
+                    var real = getFlag(args, "--run");
+                    var fixer = new GoogleDriveFixer();
+                    fixer.Fix(path, whatIf: !real);
+                }
                 else
                 {
-                    foreach (var s in addSeparate)
+                    Console.WriteLine($"Find folder sizers with args: ");
+                    Console.WriteLine($"  dumpToFile: {dumpToFile}");
+                    Console.WriteLine($"  fullName: {fullName}");
+                    Console.WriteLine($"  showLarge: {showLarge}");
+                    if (addSeparate.Count == 0)
                     {
-                        Console.WriteLine($"  addSeparate: {s}");
+                        Console.WriteLine($"  addSeparate: <empty>");
                     }
+                    else
+                    {
+                        foreach (var s in addSeparate)
+                        {
+                            Console.WriteLine($"  addSeparate: {s}");
+                        }
+                    }
+                    Console.WriteLine($"");
+                    if (!skipCheck)
+                    {
+                        Console.WriteLine($"Use '-y' to skip this check");
+                        Console.Read();
+                    }
+                    Console.WriteLine($"Running...");
+                    var finder = new SizeFinder(path);
+                    finder.Find(depth, addSeparate, showLarge);
+                    Console.WriteLine("----------");
+                    Console.WriteLine("RESULTS:");
+                    Console.WriteLine("----------");
+                    finder.DisplayOrdered(fullName);
                 }
-                Console.WriteLine($"");
-                if (!skipCheck)
-                {
-                    Console.WriteLine($"Use '-y' to skip this check");
-                    Console.Read();
-                }
-                Console.WriteLine($"Running...");
-                var finder = new SizeFinder(path);
-                finder.Find(depth, addSeparate, showLarge);
-                Console.WriteLine("----------");
-                Console.WriteLine("RESULTS:");
-                Console.WriteLine("----------");
-                finder.DisplayOrdered(fullName);
+
                 Console.Read();
             }
             catch (Exception e)
@@ -270,6 +288,222 @@ namespace folder_size
             var size = string.Format("{0:n" + decimalPlaces + "}", dValue);
             var suffix = SizeSuffixes[i];
             return size.PadRight(paddingSize) + " " + suffix;
+        }
+    }
+
+    internal class FindDups
+    {
+        public static void Scan(string rootFolder)
+        {
+            var dirHashes = new Dictionary<long, List<string>>();
+            Walk(rootFolder, dirHashes);
+
+            Console.WriteLine($"Walk complete");
+            Console.WriteLine($"");
+            Console.WriteLine($"");
+
+            StringBuilder dupOut = new();
+            foreach (var directories in dirHashes.Values.Where(x => x.Count > 1))
+            {
+                Write($"Files:");
+                foreach (var file in Directory.GetDirectories(directories.First()))
+                    Write($"    {file}");
+                foreach (var file in Directory.GetFiles(directories.First()))
+                    Write($"    {file}");
+
+                Write($"Dir:");
+                foreach (var dir in directories)
+                    Write($"    {dir}");
+
+                Write($"");
+                Write($"");
+            }
+
+            File.WriteAllText("FindDups.log", dupOut.ToString());
+
+            void Write(string msg)
+            {
+                Console.WriteLine(msg);
+                dupOut.AppendLine(msg);
+            }
+        }
+
+        private static long Walk(string dir, Dictionary<long, List<string>> dirHashes)
+        {
+            // skip these folders
+            foreach (var exclude in new string[] {
+                ".git",
+                "Library",
+                ".vs",
+                "Temp",
+                "node_modules",
+            })
+            {
+                if (dir.EndsWith($"\\{exclude}"))
+                    return 0;
+            }
+
+            Console.WriteLine($"Walk: {dir}");
+            long hash = 0;
+            try
+            {
+                foreach (var subDir in Directory.GetDirectories(dir))
+                {
+                    var subHash = Walk(subDir, dirHashes);
+                    hash = (hash * 7) + subHash;
+                }
+
+                foreach (var file in Directory.GetFiles(dir))
+                {
+                    var nameOnly = Path.GetFileName(file);
+                    var nameHash = nameOnly.GetHashCode();
+                    hash = (hash * 7) + nameHash;
+                }
+
+                if (!dirHashes.TryGetValue(hash, out var existing))
+                {
+                    existing = new List<string>();
+                    dirHashes[hash] = existing;
+                }
+                existing.Add(dir);
+            }
+            catch (Exception e)
+            {
+                Console.WriteLine($"Walk threw {e}");
+            }
+
+            return hash;
+        }
+    }
+
+    internal class GoogleDriveFixer
+    {
+        private Dictionary<string, List<(string name, bool real)>> files = new Dictionary<string, List<(string name, bool real)>>();
+
+        private void Add(string key, (string name, bool real) value)
+        {
+            if (!files.TryGetValue(key, out var list))
+            {
+                list = new List<(string name, bool real)>();
+                files[key] = list;
+            }
+
+            list.Add(value);
+        }
+
+        private static void Error(string message)
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine(message);
+            Console.ResetColor();
+        }
+        public void Fix(string path, bool whatIf)
+        {
+            Walk(new DirectoryInfo(path), CheckFile);
+
+            foreach (var kvp in files.Where(x => x.Value.Count == 2))
+            {
+                Console.WriteLine($"{kvp.Key}");
+
+                FileInfo real, copy;
+                if (kvp.Value[0].real)
+                {
+                    if (kvp.Value[1].real)
+                    {
+                        Error($"Both files real {kvp.Key}");
+                        continue;
+                    }
+                    real = new FileInfo(kvp.Value[0].name);
+                    copy = new FileInfo(kvp.Value[1].name);
+                }
+                else
+                {
+                    real = new FileInfo(kvp.Value[1].name);
+                    copy = new FileInfo(kvp.Value[0].name);
+                }
+
+                var realSize = real.Length;
+                var copySize = copy.Length;
+                if (realSize > 0 && copySize > 0)
+                {
+                    Error($"Both have size {kvp.Key}");
+                    continue;
+                }
+                if (realSize == 0 && copySize == 0)
+                {
+                    Error($"Both no size {kvp.Key}");
+                    continue;
+                }
+
+                if (realSize > 0)
+                {
+                    Console.WriteLine($"Delete {copy.Name} - {copy.Length}");
+                    if (!whatIf)
+                    {
+                        Console.WriteLine($"{copy.Attributes}");
+                        copy.Delete();
+                    }
+                }
+                else
+                {
+                    Console.WriteLine($"Rename {copy.Name} - {copy.Length}");
+                    Console.WriteLine($"Delete {real.Name} - {real.Length}");
+                    if (!whatIf)
+                    {
+                        var realPath = real.FullName;
+                        // for some reason we have to first move the file before we can delete it
+                        // so just append a known string to the end, then we can delete it after
+                        real.MoveTo(realPath + ".badfile");
+                        copy.MoveTo(realPath);
+
+                        File.Delete(realPath + ".badfile");
+                    }
+                }
+
+
+                Console.WriteLine($"");
+            }
+
+
+            var firstAbove = true;
+            Console.ForegroundColor = ConsoleColor.Yellow;
+            foreach (var kvp in files.Where(x => x.Value.Count > 2))
+            {
+                if (firstAbove)
+                {
+                    firstAbove = false;
+                    Console.WriteLine($"ABOVE 2 SAME");
+                }
+                Console.WriteLine($"{kvp.Key}");
+            }
+            Console.ResetColor();
+        }
+
+        private void CheckFile(FileInfo info)
+        {
+            var name = info.FullName;
+            if (!name.Contains("."))
+                return;
+            var lastIndex = name.LastIndexOf('.');
+            var extension = name[lastIndex..];
+            var withoutExtension = name[..lastIndex];
+
+            if (withoutExtension.EndsWith(" (1)"))
+            {
+                var otherPath = withoutExtension[..^" (1)".Length] + extension;
+                Add(otherPath, (name, false));
+            }
+
+            Add(name, (name, true));
+        }
+
+        public static void Walk(DirectoryInfo dir, Action<FileInfo> onFile)
+        {
+            foreach (var sub in dir.GetDirectories())
+                Walk(sub, onFile);
+
+            foreach (var file in dir.GetFiles())
+                onFile.Invoke(file);
         }
     }
 }
