@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Data;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -28,8 +29,8 @@ namespace folder_size
                 else if (getFlag(args, "--fix-drive"))
                 {
                     var real = getFlag(args, "--run");
-                    var fixer = new GoogleDriveFixer();
-                    fixer.Fix(path, whatIf: !real);
+                    var fixer = new GoogleDriveFixer(whatIf: !real);
+                    fixer.Fix(path);
                 }
                 else
                 {
@@ -379,6 +380,12 @@ namespace folder_size
     internal class GoogleDriveFixer
     {
         private Dictionary<string, List<(string name, bool real)>> files = new Dictionary<string, List<(string name, bool real)>>();
+        private readonly bool whatIf;
+
+        public GoogleDriveFixer(bool whatIf)
+        {
+            this.whatIf = whatIf;
+        }
 
         private void Add(string key, (string name, bool real) value)
         {
@@ -397,70 +404,14 @@ namespace folder_size
             Console.WriteLine(message);
             Console.ResetColor();
         }
-        public void Fix(string path, bool whatIf)
+        public void Fix(string path)
         {
             Walk(new DirectoryInfo(path), CheckFile);
 
             foreach (var kvp in files.Where(x => x.Value.Count == 2))
             {
                 Console.WriteLine($"{kvp.Key}");
-
-                FileInfo real, copy;
-                if (kvp.Value[0].real)
-                {
-                    if (kvp.Value[1].real)
-                    {
-                        Error($"Both files real {kvp.Key}");
-                        continue;
-                    }
-                    real = new FileInfo(kvp.Value[0].name);
-                    copy = new FileInfo(kvp.Value[1].name);
-                }
-                else
-                {
-                    real = new FileInfo(kvp.Value[1].name);
-                    copy = new FileInfo(kvp.Value[0].name);
-                }
-
-                var realSize = real.Length;
-                var copySize = copy.Length;
-                if (realSize > 0 && copySize > 0)
-                {
-                    Error($"Both have size {kvp.Key}");
-                    continue;
-                }
-                if (realSize == 0 && copySize == 0)
-                {
-                    Error($"Both no size {kvp.Key}");
-                    continue;
-                }
-
-                if (realSize > 0)
-                {
-                    Console.WriteLine($"Delete {copy.Name} - {copy.Length}");
-                    if (!whatIf)
-                    {
-                        Console.WriteLine($"{copy.Attributes}");
-                        copy.Delete();
-                    }
-                }
-                else
-                {
-                    Console.WriteLine($"Rename {copy.Name} - {copy.Length}");
-                    Console.WriteLine($"Delete {real.Name} - {real.Length}");
-                    if (!whatIf)
-                    {
-                        var realPath = real.FullName;
-                        // for some reason we have to first move the file before we can delete it
-                        // so just append a known string to the end, then we can delete it after
-                        real.MoveTo(realPath + ".badfile");
-                        copy.MoveTo(realPath);
-
-                        File.Delete(realPath + ".badfile");
-                    }
-                }
-
-
+                FixFile(kvp);
                 Console.WriteLine($"");
             }
 
@@ -477,6 +428,64 @@ namespace folder_size
                 Console.WriteLine($"{kvp.Key}");
             }
             Console.ResetColor();
+        }
+
+        private void FixFile(KeyValuePair<string, List<(string name, bool real)>> kvp)
+        {
+            FileInfo real, copy;
+            if (kvp.Value[0].real)
+            {
+                if (kvp.Value[1].real)
+                {
+                    Error($"Both files real {kvp.Key}");
+                    return;
+                }
+                real = new FileInfo(kvp.Value[0].name);
+                copy = new FileInfo(kvp.Value[1].name);
+            }
+            else
+            {
+                real = new FileInfo(kvp.Value[1].name);
+                copy = new FileInfo(kvp.Value[0].name);
+            }
+
+            var realSize = real.Length;
+            var copySize = copy.Length;
+            if (realSize > 0 && copySize > 0)
+            {
+                Error($"Both have size {kvp.Key}");
+                return;
+            }
+            if (realSize == 0 && copySize == 0)
+            {
+                Error($"Both no size {kvp.Key}");
+                return;
+            }
+
+            if (realSize > 0)
+            {
+                Console.WriteLine($"Delete {copy.Name} - {copy.Length}");
+                if (!whatIf)
+                {
+                    Console.WriteLine($"{copy.Attributes}");
+                    copy.Delete();
+                }
+            }
+            else
+            {
+                Console.WriteLine($"Rename {copy.Name} - {copy.Length}");
+                Console.WriteLine($"Delete {real.Name} - {real.Length}");
+                if (!whatIf)
+                {
+                    var realPath = real.FullName;
+                    // for some reason we have to first move the file before we can delete it
+                    // so just append a known string to the end, then we can delete it after
+                    real.MoveTo(realPath + ".badfile");
+                    copy.MoveTo(realPath);
+
+                    File.Delete(realPath + ".badfile");
+                }
+            }
         }
 
         private void CheckFile(FileInfo info)
