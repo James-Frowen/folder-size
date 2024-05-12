@@ -13,10 +13,13 @@ namespace folder_size
         {
             try
             {
+                Console.WriteLine($"Running folder-size.exe");
+
                 var path = getPath(args);
                 var addSeparate = getSeparate(args);
-                var depth = getDepth(args);
-                var dumpToFile = getFlag(args, "--dump");
+                var depth = getInt(args, "-depth=", 1);
+                var dumpToFile = getString(args, "--dump=", null);
+                var exclusions = getString(args, "--exclusions=", null);
                 var fullName = getFlag(args, "--fullname") || getFlag(args, "-full");
                 var skipCheck = getFlag(args, "-y") || getFlag(args, "--skip-check");
                 var showLarge = getFlag(args, "--show-large");
@@ -29,8 +32,15 @@ namespace folder_size
                 else if (getFlag(args, "--fix-drive"))
                 {
                     var real = getFlag(args, "--run");
-                    var fixer = new GoogleDriveFixer(whatIf: !real);
-                    fixer.Fix(path);
+                    using (var fixer = new GoogleDriveFixer(whatIf: !real, dumpToFile, exclusions))
+                    {
+                        Console.WriteLine($"Running DriveFixer with: whatIf={!real}, " +
+                            $"{(dumpToFile != null ? $"dumpToFile={dumpToFile}" : "")}" +
+                            $"{(exclusions != null ? $"exclusions={exclusions}" : "")}"
+                            );
+                        fixer.Fix(path);
+                        Console.WriteLine($"Done");
+                    }
                 }
                 else
                 {
@@ -79,6 +89,12 @@ namespace folder_size
                 Console.WriteLine($"No path given, using current folder");
                 return ".";
             }
+            if (args[0].StartsWith("-"))
+            {
+                Console.WriteLine($"First arg starts with -, using current folder");
+                return ".";
+            }
+
             var path = args[0];
 
             if (Uri.IsWellFormedUriString(path, UriKind.RelativeOrAbsolute))
@@ -110,9 +126,8 @@ namespace folder_size
             return separates;
         }
 
-        private static int getDepth(string[] args)
+        private static int getInt(string[] args, string flag, int defaultValue)
         {
-            const string flag = "-depth=";
             foreach (var arg in args)
             {
                 if (arg.ToLower().StartsWith(flag))
@@ -121,7 +136,18 @@ namespace folder_size
                     return int.Parse(depth);
                 }
             }
-            return 1;
+            return defaultValue;
+        }
+        private static string getString(string[] args, string flag, string defaultValue)
+        {
+            foreach (var arg in args)
+            {
+                if (arg.ToLower().StartsWith(flag))
+                {
+                    return arg[flag.Length..];
+                }
+            }
+            return defaultValue;
         }
 
         private static bool getFlag(string[] args, string flag)
@@ -377,15 +403,40 @@ namespace folder_size
         }
     }
 
-    internal class GoogleDriveFixer
+    internal class GoogleDriveFixer : IDisposable
     {
         private Dictionary<string, List<(string name, bool real)>> files = new Dictionary<string, List<(string name, bool real)>>();
+        private Dictionary<string, List<(string name, bool real)>> folders = new Dictionary<string, List<(string name, bool real)>>();
+        private HashSet<string> exclusions;
+        private readonly StreamWriter outWriter;
         private readonly bool whatIf;
 
-        public GoogleDriveFixer(bool whatIf)
+        private void Log(string message)
+        {
+            outWriter?.WriteLine(message);
+            Console.WriteLine(message);
+        }
+        private void Error(string message)
+        {
+            outWriter?.WriteLine($"[ERROR]: {message}");
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine(message);
+            Console.ResetColor();
+        }
+
+        public GoogleDriveFixer(bool whatIf, string dumpToFile, string exclusions)
         {
             this.whatIf = whatIf;
+            if (dumpToFile != null)
+                outWriter = new StreamWriter(dumpToFile) { AutoFlush = true };
+            if (exclusions != null)
+                this.exclusions = new HashSet<string>(File.ReadAllLines(exclusions));
         }
+        public void Dispose()
+        {
+            outWriter?.Dispose();
+        }
+
 
         private void Add(string key, (string name, bool real) value)
         {
@@ -398,21 +449,22 @@ namespace folder_size
             list.Add(value);
         }
 
-        private static void Error(string message)
-        {
-            Console.ForegroundColor = ConsoleColor.Red;
-            Console.WriteLine(message);
-            Console.ResetColor();
-        }
+
         public void Fix(string path)
         {
-            Walk(new DirectoryInfo(path), CheckFile);
+            FileHelper.Walk(new DirectoryInfo(path), CheckFolder, CheckFile);
 
             foreach (var kvp in files.Where(x => x.Value.Count == 2))
             {
-                Console.WriteLine($"{kvp.Key}");
+                Log($"File:{kvp.Key}");
                 FixFile(kvp);
-                Console.WriteLine($"");
+                Log($"");
+            }
+            foreach (var kvp in folders.Where(x => x.Value.Count == 2))
+            {
+                Log($"Folder:{kvp.Key}");
+                FixFolder(kvp);
+                Log($"");
             }
 
 
@@ -423,9 +475,18 @@ namespace folder_size
                 if (firstAbove)
                 {
                     firstAbove = false;
-                    Console.WriteLine($"ABOVE 2 SAME");
+                    Log($"ABOVE 2 SAME");
                 }
-                Console.WriteLine($"{kvp.Key}");
+                Log($"File:{kvp.Key}");
+            }
+            foreach (var kvp in folders.Where(x => x.Value.Count > 2))
+            {
+                if (firstAbove)
+                {
+                    firstAbove = false;
+                    Log($"ABOVE 2 SAME");
+                }
+                Log($"Folder:{kvp.Key}");
             }
             Console.ResetColor();
         }
@@ -453,28 +514,31 @@ namespace folder_size
             var copySize = copy.Length;
             if (realSize > 0 && copySize > 0)
             {
-                Error($"Both have size {kvp.Key}");
+                var sameFile = FileHelper.CompareFileBytes(real.FullName, copy.FullName);
+
+                Error($"Both have size, sameFile={sameFile}");
+
                 return;
             }
             if (realSize == 0 && copySize == 0)
             {
-                Error($"Both no size {kvp.Key}");
+                Error($"Both Zero");
                 return;
             }
 
             if (realSize > 0)
             {
-                Console.WriteLine($"Delete {copy.Name} - {copy.Length}");
+                Log($"Delete {copy.Name} - {copy.Length}");
                 if (!whatIf)
                 {
-                    Console.WriteLine($"{copy.Attributes}");
+                    Log($"{copy.Attributes}");
                     copy.Delete();
                 }
             }
             else
             {
-                Console.WriteLine($"Rename {copy.Name} - {copy.Length}");
-                Console.WriteLine($"Delete {real.Name} - {real.Length}");
+                Log($"Rename {copy.Name} - {copy.Length}");
+                Log($"Delete {real.Name} - {real.Length}");
                 if (!whatIf)
                 {
                     var realPath = real.FullName;
@@ -488,14 +552,45 @@ namespace folder_size
             }
         }
 
+        private void FixFolder(KeyValuePair<string, List<(string name, bool real)>> kvp)
+        {
+            DirectoryInfo real, copy;
+            if (kvp.Value[0].real)
+            {
+                if (kvp.Value[1].real)
+                {
+                    Error($"Both files real {kvp.Key}");
+                    return;
+                }
+                real = new DirectoryInfo(kvp.Value[0].name);
+                copy = new DirectoryInfo(kvp.Value[1].name);
+            }
+            else
+            {
+                real = new DirectoryInfo(kvp.Value[1].name);
+                copy = new DirectoryInfo(kvp.Value[0].name);
+            }
+        }
+
+
         private void CheckFile(FileInfo info)
         {
             var name = info.FullName;
-            if (!name.Contains("."))
+            if (exclusions != null && exclusions.Contains(name))
                 return;
-            var lastIndex = name.LastIndexOf('.');
-            var extension = name[lastIndex..];
-            var withoutExtension = name[..lastIndex];
+
+            string extension, withoutExtension;
+            if (name.Contains('.'))
+            {
+                var lastIndex = name.LastIndexOf('.');
+                extension = name[lastIndex..];
+                withoutExtension = name[..lastIndex];
+            }
+            else
+            {
+                extension = "";
+                withoutExtension = name;
+            }
 
             if (withoutExtension.EndsWith(" (1)"))
             {
@@ -505,14 +600,51 @@ namespace folder_size
 
             Add(name, (name, true));
         }
+        private void CheckFolder(DirectoryInfo info)
+        {
+            var name = info.FullName;
+            if (exclusions != null && exclusions.Contains(name))
+                return;
 
-        public static void Walk(DirectoryInfo dir, Action<FileInfo> onFile)
+            if (name.EndsWith(" (1)"))
+            {
+                var otherPath = name[..^" (1)".Length];
+                Add(otherPath, (name, false));
+            }
+
+            Add(name, (name, true));
+        }
+    }
+
+    public static class FileHelper
+    {
+        public static void Walk(DirectoryInfo dir, Action<DirectoryInfo> onDir, Action<FileInfo> onFile)
         {
             foreach (var sub in dir.GetDirectories())
-                Walk(sub, onFile);
+            {
+                Walk(sub, onDir, onFile);
+                onDir?.Invoke(sub);
+            }
 
             foreach (var file in dir.GetFiles())
-                onFile.Invoke(file);
+                onFile?.Invoke(file);
+        }
+
+        public static bool CompareFileBytes(string filePath1, string filePath2)
+        {
+            var file1 = File.ReadAllBytes(filePath1);
+            var file2 = File.ReadAllBytes(filePath2);
+
+            if (file1.Length != file2.Length)
+                return false;
+
+            for (var i = 0; i < file1.Length; i++)
+            {
+                if (file1[i] != file2[i])
+                    return false;
+            }
+
+            return true;
         }
     }
 }
