@@ -1,0 +1,1 @@
+dotnet publish ./folder-size/folder-size.csproj -c Release --output ./bin
