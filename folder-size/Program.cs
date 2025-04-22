@@ -107,7 +107,7 @@ namespace folder_size
             }
             else
             {
-                throw new Exception("Path is not well formatted");
+                throw new Exception($"Path is not well formatted, path: {path}");
             }
         }
 
